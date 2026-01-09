@@ -138,7 +138,10 @@
 
           <div class="form-group">
             <label for="essay">Paste your Paper / Essay</label>
-            <textarea id="essay" name="essay" rows="12" placeholder="Paste the text of your paper here..." required></textarea>
+            <textarea id="essay" name="essay" rows="12" placeholder="Paste the text of your paper here..." required oninput="updateCharCount()"></textarea>
+            <div id="char-count" style="font-size: 0.85em; color: #666; margin-top: 5px;">
+              <span id="current-chars">0</span> / <span id="max-chars">15000</span> characters
+            </div>
           </div>
 
           <button type="submit" id="submitBtn">
@@ -163,12 +166,40 @@
     </div>
 
     <script>
+      const MAX_CHARS = 15000; // Must match Config sheet value
+
+      function updateCharCount() {
+        const essay = document.getElementById('essay');
+        const currentChars = document.getElementById('current-chars');
+        const charCountDiv = document.getElementById('char-count');
+        const count = essay.value.length;
+
+        currentChars.innerText = count.toLocaleString();
+
+        if (count > MAX_CHARS) {
+          charCountDiv.style.color = '#d32f2f';
+          currentChars.style.fontWeight = 'bold';
+        } else if (count > MAX_CHARS * 0.9) {
+          charCountDiv.style.color = '#f57c00';
+          currentChars.style.fontWeight = 'normal';
+        } else {
+          charCountDiv.style.color = '#666';
+          currentChars.style.fontWeight = 'normal';
+        }
+      }
+
       function handleFormSubmit(event) {
         event.preventDefault();
-        
+
         const btn = document.getElementById('submitBtn');
-        const form = document.getElementById('paperForm');
-        
+        const essay = document.getElementById('essay').value;
+
+        // Client-side length validation
+        if (essay.length > MAX_CHARS) {
+          alert(`Your paper exceeds the maximum length of ${MAX_CHARS.toLocaleString()} characters. Please shorten it and try again.`);
+          return;
+        }
+
         // UI Loading State
         btn.disabled = true;
         btn.innerText = "Processing...";
@@ -176,7 +207,7 @@
         // Collect Data
         const formData = {
           name: document.getElementById('name').value,
-          essay: document.getElementById('essay').value
+          essay: essay
         };
 
         // Send to Google Apps Script

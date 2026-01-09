@@ -1,10 +1,101 @@
-// CONFIGURATION
-// Paste your Google Sheet ID here
-const SPREADSHEET_ID = "1Az9LPFedJ6c5qMthY4fKHOSbUyCmpNiEU6gRPIB1dKk";
-const SHEET_NAME = "Sheet1"; // Change if your tab is named differently
+// ===========================================
+// CHEKHOV ORAL EXAMINER - Google Apps Script
+// ===========================================
+// This script handles:
+// 1. Serving the student submission portal
+// 2. Processing paper submissions
+// 3. Providing paper lookup for 11Labs agent
+// 4. Receiving transcripts via webhook
+// 5. Grading via Claude API
+// ===========================================
 
+// CONFIGURATION
+const SPREADSHEET_ID = "1Az9LPFedJ6c5qMthY4fKHOSbUyCmpNiEU6gRPIB1dKk";
+const SUBMISSIONS_SHEET = "Sheet1";
+const CONFIG_SHEET = "Config";
+const PROMPTS_SHEET = "Prompts";
+
+// Column indices for Submissions sheet (1-based)
+const COL = {
+  TIMESTAMP: 1,
+  STUDENT_NAME: 2,
+  CODE: 3,
+  PAPER: 4,
+  STATUS: 5,
+  DEFENSE_STARTED: 6,
+  DEFENSE_ENDED: 7,
+  TRANSCRIPT: 8,
+  CLAUDE_GRADE: 9,
+  CLAUDE_COMMENTS: 10,
+  INSTRUCTOR_NOTES: 11,
+  FINAL_GRADE: 12
+};
+
+// Status values
+const STATUS = {
+  SUBMITTED: "Submitted",
+  DEFENSE_STARTED: "Defense Started",
+  DEFENSE_COMPLETE: "Defense Complete",
+  GRADED: "Graded",
+  REVIEWED: "Reviewed"
+};
+
+// ===========================================
+// CONFIGURATION HELPERS
+// ===========================================
+
+/**
+ * Retrieves a configuration value from the Config sheet
+ * @param {string} key - The config key to look up
+ * @returns {string} The config value
+ */
+function getConfig(key) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const configSheet = ss.getSheetByName(CONFIG_SHEET);
+  const data = configSheet.getDataRange().getValues();
+
+  for (let i = 0; i < data.length; i++) {
+    if (data[i][0] === key) {
+      return data[i][1];
+    }
+  }
+  throw new Error("Config key not found: " + key);
+}
+
+/**
+ * Retrieves a prompt from the Prompts sheet
+ * @param {string} promptName - The prompt name to look up
+ * @returns {string} The prompt text
+ */
+function getPrompt(promptName) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const promptsSheet = ss.getSheetByName(PROMPTS_SHEET);
+  const data = promptsSheet.getDataRange().getValues();
+
+  for (let i = 0; i < data.length; i++) {
+    if (data[i][0] === promptName) {
+      return data[i][1];
+    }
+  }
+  throw new Error("Prompt not found: " + promptName);
+}
+
+// ===========================================
+// WEB APP ENTRY POINTS
+// ===========================================
+
+/**
+ * Handles GET requests - serves the portal or handles API calls
+ */
 function doGet(e) {
-  // Serves the HTML page when someone visits the URL
+  const action = e?.parameter?.action;
+
+  // API endpoint for 11Labs to fetch papers
+  if (action === "getPaper") {
+    return handleGetPaper(e);
+  }
+
+  // Default: serve the HTML portal
   return HtmlService.createTemplateFromFile('index')
       .evaluate()
       .setTitle('Oral Defense Portal')
@@ -12,24 +103,71 @@ function doGet(e) {
       .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
+/**
+ * Handles POST requests - receives webhooks from 11Labs
+ */
+function doPost(e) {
+  try {
+    const payload = JSON.parse(e.postData.contents);
+
+    // Verify webhook secret if provided
+    const providedSecret = e?.parameter?.secret;
+    const expectedSecret = getConfig("webhook_secret");
+
+    if (providedSecret !== expectedSecret) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        error: "Invalid webhook secret"
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // Handle transcript webhook from 11Labs
+    return handleTranscriptWebhook(payload);
+
+  } catch (error) {
+    return ContentService.createTextOutput(JSON.stringify({
+      success: false,
+      error: error.toString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// ===========================================
+// PAPER SUBMISSION (Called from frontend)
+// ===========================================
+
+/**
+ * Processes a paper submission from the portal
+ * @param {Object} formObject - Contains name and essay fields
+ * @returns {Object} Status and code or error message
+ */
 function processSubmission(formObject) {
   try {
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-    const sheet = ss.getSheetByName(SHEET_NAME);
+    const sheet = ss.getSheetByName(SUBMISSIONS_SHEET);
 
-    // 1. Generate a unique random 4-digit code (1000-9999)
+    // Validate paper length
+    const maxLength = parseInt(getConfig("max_paper_length"));
+    if (formObject.essay.length > maxLength) {
+      return {
+        status: "error",
+        message: `Paper exceeds maximum length of ${maxLength} characters. Your paper has ${formObject.essay.length} characters.`
+      };
+    }
+
+    // Generate a unique code
     const code = generateUniqueCode(sheet);
 
-    // 2. Save to Spreadsheet
-    sheet.appendRow([
-      new Date(),           // Timestamp
-      formObject.name,      // Student Name
-      code,                 // The Ticket Code
-      formObject.essay,     // The Full Essay
-      "Ready for Defense"   // Status
-    ]);
+    // Create row with all columns (empty strings for unused columns)
+    const newRow = new Array(12).fill("");
+    newRow[COL.TIMESTAMP - 1] = new Date();
+    newRow[COL.STUDENT_NAME - 1] = formObject.name;
+    newRow[COL.CODE - 1] = code;
+    newRow[COL.PAPER - 1] = formObject.essay;
+    newRow[COL.STATUS - 1] = STATUS.SUBMITTED;
 
-    // 3. Return the code to the frontend
+    sheet.appendRow(newRow);
+
     return { status: "success", code: code };
 
   } catch (e) {
@@ -37,19 +175,22 @@ function processSubmission(formObject) {
   }
 }
 
+/**
+ * Generates a unique 4-digit code not already in use
+ * @param {Sheet} sheet - The submissions sheet
+ * @returns {string} A unique 4-digit code
+ */
 function generateUniqueCode(sheet) {
-  // Get all existing codes from column C (index 3)
   const lastRow = sheet.getLastRow();
   const existingCodes = new Set();
 
-  if (lastRow > 0) {
-    const codeColumn = sheet.getRange(1, 3, lastRow, 1).getValues();
+  if (lastRow > 1) { // Skip header row
+    const codeColumn = sheet.getRange(2, COL.CODE, lastRow - 1, 1).getValues();
     codeColumn.forEach(row => {
       if (row[0]) existingCodes.add(row[0].toString());
     });
   }
 
-  // Generate a unique code
   let code;
   let attempts = 0;
   const maxAttempts = 100;
@@ -65,8 +206,277 @@ function generateUniqueCode(sheet) {
   return code;
 }
 
-// Function to include HTML files in other HTML files (standard pattern)
+// ===========================================
+// 11LABS PAPER LOOKUP (GET endpoint)
+// ===========================================
+
+/**
+ * Handles paper lookup requests from 11Labs agent
+ * GET ?action=getPaper&code=1234&secret=xxx
+ */
+function handleGetPaper(e) {
+  try {
+    const code = e?.parameter?.code;
+    const providedSecret = e?.parameter?.secret;
+    const expectedSecret = getConfig("webhook_secret");
+
+    // Validate secret
+    if (providedSecret !== expectedSecret) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        error: "Invalid secret"
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // Validate code provided
+    if (!code) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        error: "No code provided"
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // Look up the paper
+    const result = getPaperByCode(code);
+
+    if (!result) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        error: "Code not found. Please check the code and try again."
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (result.status !== STATUS.SUBMITTED) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        error: "This code has already been used for a defense."
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // Update status to Defense Started
+    updateStudentStatus(code, STATUS.DEFENSE_STARTED, { defenseStarted: new Date() });
+
+    return ContentService.createTextOutput(JSON.stringify({
+      success: true,
+      studentName: result.studentName,
+      paper: result.paper,
+      wordCount: result.paper.split(/\s+/).length
+    })).setMimeType(ContentService.MimeType.JSON);
+
+  } catch (error) {
+    return ContentService.createTextOutput(JSON.stringify({
+      success: false,
+      error: error.toString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+/**
+ * Looks up a paper by its defense code
+ * @param {string} code - The 4-digit defense code
+ * @returns {Object|null} Student data or null if not found
+ */
+function getPaperByCode(code) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(SUBMISSIONS_SHEET);
+  const data = sheet.getDataRange().getValues();
+
+  // Skip header row
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][COL.CODE - 1].toString() === code.toString()) {
+      return {
+        row: i + 1, // 1-based row number
+        studentName: data[i][COL.STUDENT_NAME - 1],
+        paper: data[i][COL.PAPER - 1],
+        status: data[i][COL.STATUS - 1]
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Updates a student's status and optional fields
+ * @param {string} code - The defense code
+ * @param {string} newStatus - The new status value
+ * @param {Object} additionalFields - Optional fields to update
+ */
+function updateStudentStatus(code, newStatus, additionalFields = {}) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(SUBMISSIONS_SHEET);
+  const data = sheet.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][COL.CODE - 1].toString() === code.toString()) {
+      const row = i + 1;
+
+      // Update status
+      sheet.getRange(row, COL.STATUS).setValue(newStatus);
+
+      // Update additional fields
+      if (additionalFields.defenseStarted) {
+        sheet.getRange(row, COL.DEFENSE_STARTED).setValue(additionalFields.defenseStarted);
+      }
+      if (additionalFields.defenseEnded) {
+        sheet.getRange(row, COL.DEFENSE_ENDED).setValue(additionalFields.defenseEnded);
+      }
+      if (additionalFields.transcript) {
+        sheet.getRange(row, COL.TRANSCRIPT).setValue(additionalFields.transcript);
+      }
+      if (additionalFields.grade) {
+        sheet.getRange(row, COL.CLAUDE_GRADE).setValue(additionalFields.grade);
+      }
+      if (additionalFields.comments) {
+        sheet.getRange(row, COL.CLAUDE_COMMENTS).setValue(additionalFields.comments);
+      }
+
+      return true;
+    }
+  }
+  return false;
+}
+
+// ===========================================
+// TRANSCRIPT WEBHOOK (POST endpoint)
+// ===========================================
+
+/**
+ * Handles incoming transcript webhooks from 11Labs
+ * @param {Object} payload - The webhook payload
+ */
+function handleTranscriptWebhook(payload) {
+  try {
+    // Extract data from 11Labs webhook payload
+    // Note: Actual field names depend on 11Labs webhook format
+    const transcript = payload.transcript || payload.conversation_transcript || "";
+    const code = payload.code || payload.metadata?.code || extractCodeFromTranscript(transcript);
+
+    if (!code) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        error: "Could not determine student code from webhook"
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // Update the student record
+    const updated = updateStudentStatus(code, STATUS.DEFENSE_COMPLETE, {
+      defenseEnded: new Date(),
+      transcript: transcript
+    });
+
+    if (!updated) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        error: "Could not find student with code: " + code
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // Optionally trigger grading immediately
+    // gradeDefense(code);
+
+    return ContentService.createTextOutput(JSON.stringify({
+      success: true,
+      message: "Transcript saved for code: " + code
+    })).setMimeType(ContentService.MimeType.JSON);
+
+  } catch (error) {
+    return ContentService.createTextOutput(JSON.stringify({
+      success: false,
+      error: error.toString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+/**
+ * Attempts to extract the defense code from transcript text
+ * @param {string} transcript - The conversation transcript
+ * @returns {string|null} The extracted code or null
+ */
+function extractCodeFromTranscript(transcript) {
+  // Look for 4-digit codes in the transcript
+  const matches = transcript.match(/\b(\d{4})\b/g);
+  if (matches && matches.length > 0) {
+    // Return the first 4-digit number found (likely the code they provided)
+    return matches[0];
+  }
+  return null;
+}
+
+// ===========================================
+// CLAUDE GRADING (Phase 4 - placeholder)
+// ===========================================
+
+/**
+ * Grades a defense using Claude API
+ * @param {string} code - The student's defense code
+ */
+function gradeDefense(code) {
+  // TODO: Implement in Phase 4
+  // 1. Get paper and transcript
+  // 2. Build prompt from Prompts sheet
+  // 3. Call Claude API
+  // 4. Parse response
+  // 5. Update sheet with grade and comments
+}
+
+// ===========================================
+// UTILITY FUNCTIONS
+// ===========================================
+
+/**
+ * Includes HTML files in other HTML files (standard Apps Script pattern)
+ */
 function include(filename) {
   return HtmlService.createHtmlOutputFromFile(filename)
       .getContent();
+}
+
+/**
+ * Manual trigger to grade all completed defenses
+ * Can be run from script editor or triggered by menu
+ */
+function gradeAllPending() {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(SUBMISSIONS_SHEET);
+  const data = sheet.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][COL.STATUS - 1] === STATUS.DEFENSE_COMPLETE) {
+      const code = data[i][COL.CODE - 1].toString();
+      gradeDefense(code);
+    }
+  }
+}
+
+/**
+ * Creates a custom menu in the spreadsheet
+ */
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('Oral Defense')
+    .addItem('Grade All Pending', 'gradeAllPending')
+    .addItem('Refresh Status Counts', 'showStatusCounts')
+    .addToUi();
+}
+
+/**
+ * Shows a summary of submission statuses
+ */
+function showStatusCounts() {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(SUBMISSIONS_SHEET);
+  const data = sheet.getDataRange().getValues();
+
+  const counts = {};
+  for (let i = 1; i < data.length; i++) {
+    const status = data[i][COL.STATUS - 1] || "Unknown";
+    counts[status] = (counts[status] || 0) + 1;
+  }
+
+  let message = "Status Summary:\n";
+  for (const [status, count] of Object.entries(counts)) {
+    message += `${status}: ${count}\n`;
+  }
+
+  SpreadsheetApp.getUi().alert(message);
 }
