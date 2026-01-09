@@ -386,26 +386,48 @@ function updateStudentStatus(code, newStatus, additionalFields = {}) {
 
 /**
  * Handles incoming transcript webhooks from 11Labs
- * @param {Object} payload - The webhook payload
+ * Expected payload format:
+ * {
+ *   "type": "post_call_transcription",
+ *   "event_timestamp": 1739537297,
+ *   "data": {
+ *     "agent_id": "xyz",
+ *     "conversation_id": "abc",
+ *     "status": "done",
+ *     "transcript": [
+ *       { "role": "agent", "message": "Hello..." },
+ *       { "role": "user", "message": "My code is 1234" }
+ *     ]
+ *   }
+ * }
  */
 function handleTranscriptWebhook(payload) {
   try {
     // Extract data from 11Labs webhook payload
-    // Note: Actual field names depend on 11Labs webhook format
-    const transcript = payload.transcript || payload.conversation_transcript || "";
-    const code = payload.code || payload.metadata?.code || extractCodeFromTranscript(transcript);
+    const data = payload.data || payload;
+    const transcriptArray = data.transcript || [];
+    const conversationId = data.conversation_id || "";
+
+    // Convert transcript array to readable string
+    const transcriptText = formatTranscript(transcriptArray);
+
+    // Extract the defense code from the transcript
+    const code = extractCodeFromTranscript(transcriptText);
 
     if (!code) {
+      // Log the payload for debugging
+      console.log("Webhook received but no code found. Payload:", JSON.stringify(payload));
       return ContentService.createTextOutput(JSON.stringify({
         success: false,
-        error: "Could not determine student code from webhook"
+        error: "Could not determine student code from transcript",
+        conversation_id: conversationId
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
     // Update the student record
     const updated = updateStudentStatus(code, STATUS.DEFENSE_COMPLETE, {
       defenseEnded: new Date(),
-      transcript: transcript
+      transcript: transcriptText
     });
 
     if (!updated) {
@@ -432,17 +454,51 @@ function handleTranscriptWebhook(payload) {
 }
 
 /**
+ * Formats a transcript array into readable text
+ * @param {Array} transcriptArray - Array of {role, message} objects
+ * @returns {string} Formatted transcript text
+ */
+function formatTranscript(transcriptArray) {
+  if (!Array.isArray(transcriptArray)) {
+    return String(transcriptArray);
+  }
+
+  return transcriptArray.map(entry => {
+    const role = entry.role === "agent" ? "EXAMINER" : "STUDENT";
+    return `${role}: ${entry.message}`;
+  }).join("\n\n");
+}
+
+/**
  * Attempts to extract the defense code from transcript text
+ * Looks for 4-digit codes, prioritizing those near "code" mentions
  * @param {string} transcript - The conversation transcript
  * @returns {string|null} The extracted code or null
  */
 function extractCodeFromTranscript(transcript) {
-  // Look for 4-digit codes in the transcript
+  // First, try to find a code mentioned near the word "code"
+  const codeContextMatch = transcript.match(/code[^\d]*(\d{4})\b/i);
+  if (codeContextMatch) {
+    return codeContextMatch[1];
+  }
+
+  // Fallback: find any 4-digit number in student responses
+  const studentLines = transcript.split('\n')
+    .filter(line => line.startsWith('STUDENT:'));
+
+  for (const line of studentLines) {
+    const match = line.match(/\b(\d{4})\b/);
+    if (match) {
+      return match[0];
+    }
+  }
+
+  // Last resort: any 4-digit number in the transcript
   const matches = transcript.match(/\b(\d{4})\b/g);
   if (matches && matches.length > 0) {
-    // Return the first 4-digit number found (likely the code they provided)
     return matches[0];
   }
+
   return null;
 }
 
