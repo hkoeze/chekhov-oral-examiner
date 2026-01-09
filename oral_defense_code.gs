@@ -41,25 +41,59 @@ const STATUS = {
 };
 
 // ===========================================
+// DEFAULT VALUES (used when Config sheet doesn't exist)
+// ===========================================
+const DEFAULTS = {
+  claude_api_key: "",
+  claude_model: "claude-sonnet-4-20250514",
+  max_paper_length: "15000",
+  webhook_secret: "default_secret_change_me"
+};
+
+// ===========================================
 // CONFIGURATION HELPERS
 // ===========================================
 
 /**
  * Retrieves a configuration value from the Config sheet
+ * Falls back to DEFAULTS if Config sheet doesn't exist
  * @param {string} key - The config key to look up
  * @returns {string} The config value
  */
 function getConfig(key) {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  const configSheet = ss.getSheetByName(CONFIG_SHEET);
-  const data = configSheet.getDataRange().getValues();
+  try {
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const configSheet = ss.getSheetByName(CONFIG_SHEET);
 
-  for (let i = 0; i < data.length; i++) {
-    if (data[i][0] === key) {
-      return data[i][1];
+    // If Config sheet doesn't exist, use defaults
+    if (!configSheet) {
+      if (DEFAULTS.hasOwnProperty(key)) {
+        return DEFAULTS[key];
+      }
+      throw new Error("Config key not found and no default: " + key);
     }
+
+    const data = configSheet.getDataRange().getValues();
+
+    for (let i = 0; i < data.length; i++) {
+      if (data[i][0] === key) {
+        return data[i][1];
+      }
+    }
+
+    // Key not in sheet, try defaults
+    if (DEFAULTS.hasOwnProperty(key)) {
+      return DEFAULTS[key];
+    }
+    throw new Error("Config key not found: " + key);
+
+  } catch (e) {
+    // If any error, try defaults
+    if (DEFAULTS.hasOwnProperty(key)) {
+      return DEFAULTS[key];
+    }
+    throw e;
   }
-  throw new Error("Config key not found: " + key);
 }
 
 /**
@@ -68,16 +102,26 @@ function getConfig(key) {
  * @returns {string} The prompt text
  */
 function getPrompt(promptName) {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  const promptsSheet = ss.getSheetByName(PROMPTS_SHEET);
-  const data = promptsSheet.getDataRange().getValues();
+  try {
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const promptsSheet = ss.getSheetByName(PROMPTS_SHEET);
 
-  for (let i = 0; i < data.length; i++) {
-    if (data[i][0] === promptName) {
-      return data[i][1];
+    if (!promptsSheet) {
+      throw new Error("Prompts sheet not found. Please create a 'Prompts' tab.");
     }
+
+    const data = promptsSheet.getDataRange().getValues();
+
+    for (let i = 0; i < data.length; i++) {
+      if (data[i][0] === promptName) {
+        return data[i][1];
+      }
+    }
+    throw new Error("Prompt not found: " + promptName);
+
+  } catch (e) {
+    throw e;
   }
-  throw new Error("Prompt not found: " + promptName);
 }
 
 // ===========================================
