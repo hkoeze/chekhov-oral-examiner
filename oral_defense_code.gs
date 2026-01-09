@@ -16,11 +16,10 @@ function processSubmission(formObject) {
   try {
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     const sheet = ss.getSheetByName(SHEET_NAME);
-    
-    // 1. Generate a random 4-digit code (1000-9999)
-    // In a high-volume app, we'd check for duplicates, but for a class, this is fine.
-    const code = Math.floor(1000 + Math.random() * 9000).toString();
-    
+
+    // 1. Generate a unique random 4-digit code (1000-9999)
+    const code = generateUniqueCode(sheet);
+
     // 2. Save to Spreadsheet
     sheet.appendRow([
       new Date(),           // Timestamp
@@ -29,13 +28,41 @@ function processSubmission(formObject) {
       formObject.essay,     // The Full Essay
       "Ready for Defense"   // Status
     ]);
-    
+
     // 3. Return the code to the frontend
     return { status: "success", code: code };
-    
+
   } catch (e) {
     return { status: "error", message: e.toString() };
   }
+}
+
+function generateUniqueCode(sheet) {
+  // Get all existing codes from column C (index 3)
+  const lastRow = sheet.getLastRow();
+  const existingCodes = new Set();
+
+  if (lastRow > 0) {
+    const codeColumn = sheet.getRange(1, 3, lastRow, 1).getValues();
+    codeColumn.forEach(row => {
+      if (row[0]) existingCodes.add(row[0].toString());
+    });
+  }
+
+  // Generate a unique code
+  let code;
+  let attempts = 0;
+  const maxAttempts = 100;
+
+  do {
+    code = Math.floor(1000 + Math.random() * 9000).toString();
+    attempts++;
+    if (attempts > maxAttempts) {
+      throw new Error("Unable to generate unique code after " + maxAttempts + " attempts");
+    }
+  } while (existingCodes.has(code));
+
+  return code;
 }
 
 // Function to include HTML files in other HTML files (standard pattern)
