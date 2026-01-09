@@ -4,9 +4,10 @@
 // This script handles:
 // 1. Serving the student submission portal
 // 2. Processing paper submissions
-// 3. Providing paper lookup for 11Labs agent
-// 4. Receiving transcripts via webhook
-// 5. Grading via Claude API
+// 3. Providing essay lookup for 11Labs agent
+// 4. Providing randomized questions for 11Labs agent
+// 5. Receiving transcripts via webhook
+// 6. Grading via Claude API
 // ===========================================
 
 // CONFIGURATION
@@ -14,6 +15,7 @@ const SPREADSHEET_ID = "1Az9LPFedJ6c5qMthY4fKHOSbUyCmpNiEU6gRPIB1dKk";
 const SUBMISSIONS_SHEET = "Database";  // Renamed from Sheet1
 const CONFIG_SHEET = "Config";
 const PROMPTS_SHEET = "Prompts";
+const QUESTIONS_SHEET = "Questions";
 
 // Column indices for Submissions sheet (1-based)
 const COL = {
@@ -47,7 +49,9 @@ const DEFAULTS = {
   claude_api_key: "",
   claude_model: "claude-sonnet-4-20250514",
   max_paper_length: "15000",
-  webhook_secret: "default_secret_change_me"
+  webhook_secret: "default_secret_change_me",
+  content_questions_count: "2",
+  process_questions_count: "1"
 };
 
 // ===========================================
@@ -124,6 +128,75 @@ function getPrompt(promptName) {
   }
 }
 
+/**
+ * Retrieves randomized questions from the Questions sheet
+ * @param {number} contentCount - Number of content questions to return (default from config)
+ * @param {number} processCount - Number of process questions to return (default from config)
+ * @returns {Object} Object with contentQuestions and processQuestions arrays
+ */
+function getRandomizedQuestions(contentCount, processCount) {
+  // Use config defaults if not specified
+  if (contentCount === undefined) {
+    contentCount = parseInt(getConfig("content_questions_count"));
+  }
+  if (processCount === undefined) {
+    processCount = parseInt(getConfig("process_questions_count"));
+  }
+
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const questionsSheet = ss.getSheetByName(QUESTIONS_SHEET);
+
+  if (!questionsSheet) {
+    throw new Error("Questions sheet not found. Please create a 'Questions' tab with columns: category, question");
+  }
+
+  const data = questionsSheet.getDataRange().getValues();
+
+  // Separate questions by category (no header row expected)
+  const contentQuestions = [];
+  const processQuestions = [];
+
+  for (let i = 0; i < data.length; i++) {
+    const category = data[i][0]?.toString().toLowerCase().trim();
+    const question = data[i][1]?.toString().trim();
+
+    if (!question) continue; // Skip empty rows
+
+    if (category === "content") {
+      contentQuestions.push(question);
+    } else if (category === "process") {
+      processQuestions.push(question);
+    }
+  }
+
+  // Shuffle and select the requested number of questions
+  const selectedContent = shuffleArray(contentQuestions).slice(0, contentCount);
+  const selectedProcess = shuffleArray(processQuestions).slice(0, processCount);
+
+  return {
+    contentQuestions: selectedContent,
+    processQuestions: selectedProcess,
+    totalSelected: selectedContent.length + selectedProcess.length
+  };
+}
+
+/**
+ * Fisher-Yates shuffle algorithm for randomizing arrays
+ * @param {Array} array - The array to shuffle
+ * @returns {Array} A new shuffled array (does not modify original)
+ */
+function shuffleArray(array) {
+  // Create a copy to avoid modifying the original
+  const shuffled = [...array];
+
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+
+  return shuffled;
+}
+
 // ===========================================
 // WEB APP ENTRY POINTS
 // ===========================================
@@ -134,9 +207,14 @@ function getPrompt(promptName) {
 function doGet(e) {
   const action = e?.parameter?.action;
 
-  // API endpoint for 11Labs to fetch papers
-  if (action === "getPaper") {
-    return handleGetPaper(e);
+  // API endpoint for 11Labs to fetch essays
+  if (action === "getEssay") {
+    return handleGetEssay(e);
+  }
+
+  // API endpoint for 11Labs to fetch randomized questions
+  if (action === "getQuestions") {
+    return handleGetQuestions(e);
   }
 
   // Default: serve the HTML portal
@@ -251,14 +329,14 @@ function generateUniqueCode(sheet) {
 }
 
 // ===========================================
-// 11LABS PAPER LOOKUP (GET endpoint)
+// 11LABS ESSAY LOOKUP (GET endpoint)
 // ===========================================
 
 /**
- * Handles paper lookup requests from 11Labs agent
- * GET ?action=getPaper&code=1234&secret=xxx
+ * Handles essay lookup requests from 11Labs agent
+ * GET ?action=getEssay&code=1234&secret=xxx
  */
-function handleGetPaper(e) {
+function handleGetEssay(e) {
   try {
     const code = e?.parameter?.code;
     const providedSecret = e?.parameter?.secret;
@@ -280,8 +358,8 @@ function handleGetPaper(e) {
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    // Look up the paper
-    const result = getPaperByCode(code);
+    // Look up the essay
+    const result = getEssayByCode(code);
 
     if (!result) {
       return ContentService.createTextOutput(JSON.stringify({
@@ -303,8 +381,56 @@ function handleGetPaper(e) {
     return ContentService.createTextOutput(JSON.stringify({
       success: true,
       studentName: result.studentName,
-      paper: result.paper,
-      wordCount: result.paper.split(/\s+/).length
+      essay: result.essay,
+      wordCount: result.essay.split(/\s+/).length
+    })).setMimeType(ContentService.MimeType.JSON);
+
+  } catch (error) {
+    return ContentService.createTextOutput(JSON.stringify({
+      success: false,
+      error: error.toString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// ===========================================
+// 11LABS QUESTIONS LOOKUP (GET endpoint)
+// ===========================================
+
+/**
+ * Handles randomized questions requests from 11Labs agent
+ * GET ?action=getQuestions&secret=xxx
+ * Optional: &contentCount=4&processCount=2
+ */
+function handleGetQuestions(e) {
+  try {
+    const providedSecret = e?.parameter?.secret;
+    const expectedSecret = getConfig("webhook_secret");
+
+    // Validate secret
+    if (providedSecret !== expectedSecret) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        error: "Invalid secret"
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // Get optional count parameters
+    const contentCount = e?.parameter?.contentCount
+      ? parseInt(e.parameter.contentCount)
+      : undefined;
+    const processCount = e?.parameter?.processCount
+      ? parseInt(e.parameter.processCount)
+      : undefined;
+
+    // Get randomized questions
+    const questions = getRandomizedQuestions(contentCount, processCount);
+
+    return ContentService.createTextOutput(JSON.stringify({
+      success: true,
+      contentQuestions: questions.contentQuestions,
+      processQuestions: questions.processQuestions,
+      totalQuestions: questions.totalSelected
     })).setMimeType(ContentService.MimeType.JSON);
 
   } catch (error) {
@@ -316,11 +442,11 @@ function handleGetPaper(e) {
 }
 
 /**
- * Looks up a paper by its defense code
+ * Looks up an essay by its defense code
  * @param {string} code - The 4-digit defense code
  * @returns {Object|null} Student data or null if not found
  */
-function getPaperByCode(code) {
+function getEssayByCode(code) {
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sheet = ss.getSheetByName(SUBMISSIONS_SHEET);
   const data = sheet.getDataRange().getValues();
@@ -331,7 +457,7 @@ function getPaperByCode(code) {
       return {
         row: i + 1, // 1-based row number
         studentName: data[i][COL.STUDENT_NAME - 1],
-        paper: data[i][COL.PAPER - 1],
+        essay: data[i][COL.PAPER - 1],
         status: data[i][COL.STATUS - 1]
       };
     }
