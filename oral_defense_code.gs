@@ -4,7 +4,7 @@
 // This script handles:
 // 1. Serving the student submission portal
 // 2. Processing paper submissions
-// 3. Providing paper lookup for 11Labs agent
+// 3. Providing essay lookup for 11Labs agent
 // 4. Providing randomized questions for 11Labs agent
 // 5. Receiving transcripts via webhook
 // 6. Grading via Claude API
@@ -50,8 +50,8 @@ const DEFAULTS = {
   claude_model: "claude-sonnet-4-20250514",
   max_paper_length: "15000",
   webhook_secret: "default_secret_change_me",
-  content_questions_count: "4",
-  process_questions_count: "2"
+  content_questions_count: "2",
+  process_questions_count: "1"
 };
 
 // ===========================================
@@ -152,11 +152,11 @@ function getRandomizedQuestions(contentCount, processCount) {
 
   const data = questionsSheet.getDataRange().getValues();
 
-  // Separate questions by category (skip header row)
+  // Separate questions by category (no header row expected)
   const contentQuestions = [];
   const processQuestions = [];
 
-  for (let i = 1; i < data.length; i++) {
+  for (let i = 0; i < data.length; i++) {
     const category = data[i][0]?.toString().toLowerCase().trim();
     const question = data[i][1]?.toString().trim();
 
@@ -207,9 +207,9 @@ function shuffleArray(array) {
 function doGet(e) {
   const action = e?.parameter?.action;
 
-  // API endpoint for 11Labs to fetch papers
-  if (action === "getPaper") {
-    return handleGetPaper(e);
+  // API endpoint for 11Labs to fetch essays
+  if (action === "getEssay") {
+    return handleGetEssay(e);
   }
 
   // API endpoint for 11Labs to fetch randomized questions
@@ -329,14 +329,14 @@ function generateUniqueCode(sheet) {
 }
 
 // ===========================================
-// 11LABS PAPER LOOKUP (GET endpoint)
+// 11LABS ESSAY LOOKUP (GET endpoint)
 // ===========================================
 
 /**
- * Handles paper lookup requests from 11Labs agent
- * GET ?action=getPaper&code=1234&secret=xxx
+ * Handles essay lookup requests from 11Labs agent
+ * GET ?action=getEssay&code=1234&secret=xxx
  */
-function handleGetPaper(e) {
+function handleGetEssay(e) {
   try {
     const code = e?.parameter?.code;
     const providedSecret = e?.parameter?.secret;
@@ -358,8 +358,8 @@ function handleGetPaper(e) {
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    // Look up the paper
-    const result = getPaperByCode(code);
+    // Look up the essay
+    const result = getEssayByCode(code);
 
     if (!result) {
       return ContentService.createTextOutput(JSON.stringify({
@@ -381,8 +381,8 @@ function handleGetPaper(e) {
     return ContentService.createTextOutput(JSON.stringify({
       success: true,
       studentName: result.studentName,
-      paper: result.paper,
-      wordCount: result.paper.split(/\s+/).length
+      essay: result.essay,
+      wordCount: result.essay.split(/\s+/).length
     })).setMimeType(ContentService.MimeType.JSON);
 
   } catch (error) {
@@ -442,11 +442,11 @@ function handleGetQuestions(e) {
 }
 
 /**
- * Looks up a paper by its defense code
+ * Looks up an essay by its defense code
  * @param {string} code - The 4-digit defense code
  * @returns {Object|null} Student data or null if not found
  */
-function getPaperByCode(code) {
+function getEssayByCode(code) {
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sheet = ss.getSheetByName(SUBMISSIONS_SHEET);
   const data = sheet.getDataRange().getValues();
@@ -457,7 +457,7 @@ function getPaperByCode(code) {
       return {
         row: i + 1, // 1-based row number
         studentName: data[i][COL.STUDENT_NAME - 1],
-        paper: data[i][COL.PAPER - 1],
+        essay: data[i][COL.PAPER - 1],
         status: data[i][COL.STATUS - 1]
       };
     }
