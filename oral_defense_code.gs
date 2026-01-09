@@ -11,7 +11,7 @@
 
 // CONFIGURATION
 const SPREADSHEET_ID = "1Az9LPFedJ6c5qMthY4fKHOSbUyCmpNiEU6gRPIB1dKk";
-const SUBMISSIONS_SHEET = "Sheet1";
+const SUBMISSIONS_SHEET = "Database";  // Renamed from Sheet1
 const CONFIG_SHEET = "Config";
 const PROMPTS_SHEET = "Prompts";
 
