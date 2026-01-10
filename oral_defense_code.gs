@@ -384,6 +384,7 @@ function handleGetEssay(e) {
 
     return ContentService.createTextOutput(JSON.stringify({
       success: true,
+      code: code,  // Include code so 11Labs can store it as a dynamic variable
       studentName: result.studentName,
       essay: result.essay,
       wordCount: result.essay.split(/\s+/).length
