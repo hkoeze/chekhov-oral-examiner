@@ -368,15 +368,19 @@ function handleGetEssay(e) {
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    if (result.status !== STATUS.SUBMITTED) {
+    // Allow essay retrieval during active defense (for retries/reconnections)
+    // But reject if defense is already complete or graded
+    if (result.status !== STATUS.SUBMITTED && result.status !== STATUS.DEFENSE_STARTED) {
       return ContentService.createTextOutput(JSON.stringify({
         success: false,
         error: "This code has already been used for a defense."
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    // Update status to Defense Started
-    updateStudentStatus(code, STATUS.DEFENSE_STARTED, { defenseStarted: new Date() });
+    // Only update status if this is the first call (status is still Submitted)
+    if (result.status === STATUS.SUBMITTED) {
+      updateStudentStatus(code, STATUS.DEFENSE_STARTED, { defenseStarted: new Date() });
+    }
 
     return ContentService.createTextOutput(JSON.stringify({
       success: true,
