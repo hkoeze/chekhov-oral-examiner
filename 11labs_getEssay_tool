@@ -15,9 +15,9 @@
     "query_params_schema": [
       {
         "id": "code",
-        "type": "integer",
+        "type": "string",
         "value_type": "llm_prompt",
-        "description": "The 4-digit numeric code the student said. Extract ONLY the 4 digits as numbers (e.g., \"1234\"), not words. If they say \"one two three four\", convert to \"1234\".\n\n",
+        "description": "The 4-digit numeric code the student said. Extract ONLY the 4 digits as numbers (e.g., \"1234\"), not words. If they say \"one two three four\", convert to \"1234\".",
         "dynamic_variable": "",
         "constant_value": "",
         "enum": null,
