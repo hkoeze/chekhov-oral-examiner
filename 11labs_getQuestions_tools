@@ -1,0 +1,24 @@
+{
+  "type": "webhook",
+  "name": "getQuestions",
+  "description": "Gets questions",
+  "disable_interruptions": false,
+  "force_pre_tool_speech": "auto",
+  "assignments": [],
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "execution_mode": "immediate",
+  "api_schema": {
+    "url": "https://script.google.com/macros/s/AKfycbwSbD18a5XxvWgG0jlhHrIRoGj8U71qJMX9Tbq1a-fy0le923NlOhEXL-pIjM6_iOSx/exec?action=getQuestions&secret=Chekhov_Oral_Defense_Bot2",
+    "method": "GET",
+    "path_params_schema": [],
+    "query_params_schema": [],
+    "request_body_schema": null,
+    "request_headers": [],
+    "auth_connection": null
+  },
+  "response_timeout_secs": 20,
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
+  }
+}
