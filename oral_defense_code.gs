@@ -207,6 +207,9 @@ function shuffleArray(array) {
 function doGet(e) {
   const action = e?.parameter?.action;
 
+  console.log("=== doGet called ===");
+  console.log("Action:", action || "none (serving portal)");
+
   // API endpoint for 11Labs to fetch essays
   if (action === "getEssay") {
     return handleGetEssay(e);
@@ -218,6 +221,7 @@ function doGet(e) {
   }
 
   // Default: serve the HTML portal
+  console.log("Serving HTML portal");
   return HtmlService.createTemplateFromFile('index')
       .evaluate()
       .setTitle('Oral Defense Portal')
@@ -230,23 +234,30 @@ function doGet(e) {
  */
 function doPost(e) {
   try {
+    console.log("=== doPost called ===");
+    console.log("Content length:", e.postData?.length);
+
     const payload = JSON.parse(e.postData.contents);
+    console.log("Payload type:", payload.type);
 
     // Verify webhook secret if provided
     const providedSecret = e?.parameter?.secret;
     const expectedSecret = getConfig("webhook_secret");
 
     if (providedSecret !== expectedSecret) {
+      console.log("POST: Secret validation FAILED");
       return ContentService.createTextOutput(JSON.stringify({
         success: false,
         error: "Invalid webhook secret"
       })).setMimeType(ContentService.MimeType.JSON);
     }
+    console.log("POST: Secret validation passed");
 
     // Handle transcript webhook from 11Labs
     return handleTranscriptWebhook(payload);
 
   } catch (error) {
+    console.log("EXCEPTION in doPost:", error.toString());
     return ContentService.createTextOutput(JSON.stringify({
       success: false,
       error: error.toString()
@@ -342,16 +353,27 @@ function handleGetEssay(e) {
     const providedSecret = e?.parameter?.secret;
     const expectedSecret = getConfig("webhook_secret");
 
+    // Log all incoming parameters for debugging
+    console.log("=== getEssay Request ===");
+    console.log("All parameters:", JSON.stringify(e?.parameter));
+    console.log("Code received:", code);
+    console.log("Code type:", typeof code);
+    console.log("Code length:", code ? code.length : "N/A");
+    console.log("Code char codes:", code ? code.split('').map(c => c.charCodeAt(0)).join(',') : "N/A");
+
     // Validate secret
     if (providedSecret !== expectedSecret) {
+      console.log("Secret validation FAILED - provided:", providedSecret, "expected:", expectedSecret);
       return ContentService.createTextOutput(JSON.stringify({
         success: false,
         error: "Invalid secret"
       })).setMimeType(ContentService.MimeType.JSON);
     }
+    console.log("Secret validation passed");
 
     // Validate code provided
     if (!code) {
+      console.log("ERROR: No code provided in request");
       return ContentService.createTextOutput(JSON.stringify({
         success: false,
         error: "No code provided"
@@ -359,18 +381,23 @@ function handleGetEssay(e) {
     }
 
     // Look up the essay
+    console.log("Looking up essay for code:", code);
     const result = getEssayByCode(code);
 
     if (!result) {
+      console.log("ERROR: Code not found in database. Searched for:", code);
       return ContentService.createTextOutput(JSON.stringify({
         success: false,
         error: "Code not found. Please check the code and try again."
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
+    console.log("Found student:", result.studentName, "Status:", result.status);
+
     // Allow essay retrieval during active defense (for retries/reconnections)
     // But reject if defense is already complete or graded
     if (result.status !== STATUS.SUBMITTED && result.status !== STATUS.DEFENSE_STARTED) {
+      console.log("ERROR: Invalid status for retrieval. Status:", result.status);
       return ContentService.createTextOutput(JSON.stringify({
         success: false,
         error: "This code has already been used for a defense."
@@ -379,9 +406,11 @@ function handleGetEssay(e) {
 
     // Only update status if this is the first call (status is still Submitted)
     if (result.status === STATUS.SUBMITTED) {
+      console.log("Updating status to Defense Started");
       updateStudentStatus(code, STATUS.DEFENSE_STARTED, { defenseStarted: new Date() });
     }
 
+    console.log("SUCCESS: Returning essay. Word count:", result.essay.split(/\s+/).length);
     return ContentService.createTextOutput(JSON.stringify({
       success: true,
       studentName: result.studentName,
@@ -390,6 +419,7 @@ function handleGetEssay(e) {
     })).setMimeType(ContentService.MimeType.JSON);
 
   } catch (error) {
+    console.log("EXCEPTION in handleGetEssay:", error.toString());
     return ContentService.createTextOutput(JSON.stringify({
       success: false,
       error: error.toString()
@@ -408,16 +438,21 @@ function handleGetEssay(e) {
  */
 function handleGetQuestions(e) {
   try {
+    console.log("=== getQuestions Request ===");
+    console.log("All parameters:", JSON.stringify(e?.parameter));
+
     const providedSecret = e?.parameter?.secret;
     const expectedSecret = getConfig("webhook_secret");
 
     // Validate secret
     if (providedSecret !== expectedSecret) {
+      console.log("Secret validation FAILED");
       return ContentService.createTextOutput(JSON.stringify({
         success: false,
         error: "Invalid secret"
       })).setMimeType(ContentService.MimeType.JSON);
     }
+    console.log("Secret validation passed");
 
     // Get optional count parameters
     const contentCount = e?.parameter?.contentCount
@@ -455,9 +490,20 @@ function getEssayByCode(code) {
   const sheet = ss.getSheetByName(SUBMISSIONS_SHEET);
   const data = sheet.getDataRange().getValues();
 
+  // Normalize the search code (trim whitespace, convert to string)
+  const searchCode = code.toString().trim();
+  console.log("getEssayByCode - searching for:", searchCode, "length:", searchCode.length);
+
+  // Collect all existing codes for debugging
+  const existingCodes = [];
+
   // Skip header row
   for (let i = 1; i < data.length; i++) {
-    if (data[i][COL.CODE - 1].toString() === code.toString()) {
+    const rowCode = data[i][COL.CODE - 1]?.toString().trim() || "";
+    existingCodes.push(rowCode);
+
+    if (rowCode === searchCode) {
+      console.log("MATCH FOUND at row", i + 1, "- code:", rowCode);
       return {
         row: i + 1, // 1-based row number
         studentName: data[i][COL.STUDENT_NAME - 1],
@@ -466,6 +512,18 @@ function getEssayByCode(code) {
       };
     }
   }
+
+  // No match found - log all existing codes for debugging
+  console.log("NO MATCH - searched for:", searchCode);
+  console.log("Existing codes in database:", existingCodes.join(", "));
+
+  // Check for near-matches (to help debug)
+  for (const existingCode of existingCodes) {
+    if (existingCode.includes(searchCode) || searchCode.includes(existingCode)) {
+      console.log("Potential near-match found:", existingCode);
+    }
+  }
+
   return null;
 }
 
@@ -533,20 +591,28 @@ function updateStudentStatus(code, newStatus, additionalFields = {}) {
  */
 function handleTranscriptWebhook(payload) {
   try {
+    console.log("=== Transcript Webhook Received ===");
+    console.log("Payload type:", payload.type);
+
     // Extract data from 11Labs webhook payload
     const data = payload.data || payload;
     const transcriptArray = data.transcript || [];
     const conversationId = data.conversation_id || "";
+
+    console.log("Conversation ID:", conversationId);
+    console.log("Transcript entries:", transcriptArray.length);
 
     // Convert transcript array to readable string
     const transcriptText = formatTranscript(transcriptArray);
 
     // Extract the defense code from the transcript
     const code = extractCodeFromTranscript(transcriptText);
+    console.log("Extracted code from transcript:", code);
 
     if (!code) {
       // Log the payload for debugging
-      console.log("Webhook received but no code found. Payload:", JSON.stringify(payload));
+      console.log("ERROR: No code found in transcript");
+      console.log("Transcript text:", transcriptText.substring(0, 500) + "...");
       return ContentService.createTextOutput(JSON.stringify({
         success: false,
         error: "Could not determine student code from transcript",
