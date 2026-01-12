@@ -16,6 +16,56 @@ const SUBMISSIONS_SHEET = "Database";  // Renamed from Sheet1
 const CONFIG_SHEET = "Config";
 const PROMPTS_SHEET = "Prompts";
 const QUESTIONS_SHEET = "Questions";
+const LOGS_SHEET = "Logs";
+
+// ===========================================
+// SPREADSHEET LOGGING (visible in Logs tab)
+// ===========================================
+
+/**
+ * Writes a log entry to the Logs sheet for easy debugging
+ * @param {string} source - The function/context name
+ * @param {string} message - The log message
+ * @param {Object|string} data - Optional additional data
+ */
+function sheetLog(source, message, data = "") {
+  try {
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    let logsSheet = ss.getSheetByName(LOGS_SHEET);
+
+    // Create Logs sheet if it doesn't exist
+    if (!logsSheet) {
+      logsSheet = ss.insertSheet(LOGS_SHEET);
+      logsSheet.appendRow(["Timestamp", "Source", "Message", "Data"]);
+      logsSheet.getRange(1, 1, 1, 4).setFontWeight("bold");
+    }
+
+    // Format data as string if it's an object
+    const dataStr = (typeof data === "object") ? JSON.stringify(data) : data;
+
+    // Add log entry
+    logsSheet.appendRow([new Date(), source, message, dataStr]);
+
+    // Also log to console for Apps Script logs
+    console.log(`[${source}] ${message}`, dataStr);
+
+  } catch (e) {
+    // Don't let logging errors break the main flow
+    console.log("Logging error:", e.toString());
+  }
+}
+
+/**
+ * Clears all log entries (keeps header row)
+ * Run this manually from script editor to clear logs
+ */
+function clearLogs() {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const logsSheet = ss.getSheetByName(LOGS_SHEET);
+  if (logsSheet && logsSheet.getLastRow() > 1) {
+    logsSheet.deleteRows(2, logsSheet.getLastRow() - 1);
+  }
+}
 
 // Column indices for Submissions sheet (1-based)
 const COL = {
@@ -353,27 +403,31 @@ function handleGetEssay(e) {
     const providedSecret = e?.parameter?.secret;
     const expectedSecret = getConfig("webhook_secret");
 
-    // Log all incoming parameters for debugging
-    console.log("=== getEssay Request ===");
-    console.log("All parameters:", JSON.stringify(e?.parameter));
-    console.log("Code received:", code);
-    console.log("Code type:", typeof code);
-    console.log("Code length:", code ? code.length : "N/A");
-    console.log("Code char codes:", code ? code.split('').map(c => c.charCodeAt(0)).join(',') : "N/A");
+    // Log all incoming parameters to spreadsheet for debugging
+    sheetLog("handleGetEssay", "Request received", {
+      allParams: e?.parameter,
+      code: code,
+      codeType: typeof code,
+      codeLength: code ? code.length : "N/A",
+      codeCharCodes: code ? code.split('').map(c => c.charCodeAt(0)).join(',') : "N/A"
+    });
 
     // Validate secret
     if (providedSecret !== expectedSecret) {
-      console.log("Secret validation FAILED - provided:", providedSecret, "expected:", expectedSecret);
+      sheetLog("handleGetEssay", "SECRET FAILED", {
+        provided: providedSecret ? providedSecret.substring(0, 4) + "..." : "none",
+        expected: expectedSecret ? expectedSecret.substring(0, 4) + "..." : "none"
+      });
       return ContentService.createTextOutput(JSON.stringify({
         success: false,
         error: "Invalid secret"
       })).setMimeType(ContentService.MimeType.JSON);
     }
-    console.log("Secret validation passed");
+    sheetLog("handleGetEssay", "Secret OK", "");
 
     // Validate code provided
     if (!code) {
-      console.log("ERROR: No code provided in request");
+      sheetLog("handleGetEssay", "ERROR: No code provided", "");
       return ContentService.createTextOutput(JSON.stringify({
         success: false,
         error: "No code provided"
@@ -381,23 +435,30 @@ function handleGetEssay(e) {
     }
 
     // Look up the essay
-    console.log("Looking up essay for code:", code);
+    sheetLog("handleGetEssay", "Looking up code", code);
     const result = getEssayByCode(code);
 
     if (!result) {
-      console.log("ERROR: Code not found in database. Searched for:", code);
+      sheetLog("handleGetEssay", "CODE NOT FOUND", { searchedFor: code });
       return ContentService.createTextOutput(JSON.stringify({
         success: false,
         error: "Code not found. Please check the code and try again."
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
-    console.log("Found student:", result.studentName, "Status:", result.status);
+    sheetLog("handleGetEssay", "Found student", {
+      name: result.studentName,
+      status: result.status,
+      row: result.row
+    });
 
     // Allow essay retrieval during active defense (for retries/reconnections)
     // But reject if defense is already complete or graded
     if (result.status !== STATUS.SUBMITTED && result.status !== STATUS.DEFENSE_STARTED) {
-      console.log("ERROR: Invalid status for retrieval. Status:", result.status);
+      sheetLog("handleGetEssay", "INVALID STATUS", {
+        code: code,
+        status: result.status
+      });
       return ContentService.createTextOutput(JSON.stringify({
         success: false,
         error: "This code has already been used for a defense."
@@ -406,20 +467,26 @@ function handleGetEssay(e) {
 
     // Only update status if this is the first call (status is still Submitted)
     if (result.status === STATUS.SUBMITTED) {
-      console.log("Updating status to Defense Started");
+      sheetLog("handleGetEssay", "Updating to Defense Started", code);
       updateStudentStatus(code, STATUS.DEFENSE_STARTED, { defenseStarted: new Date() });
     }
 
-    console.log("SUCCESS: Returning essay. Word count:", result.essay.split(/\s+/).length);
+    const wordCount = result.essay.split(/\s+/).length;
+    sheetLog("handleGetEssay", "SUCCESS - returning essay", {
+      code: code,
+      student: result.studentName,
+      wordCount: wordCount
+    });
+
     return ContentService.createTextOutput(JSON.stringify({
       success: true,
       studentName: result.studentName,
       essay: result.essay,
-      wordCount: result.essay.split(/\s+/).length
+      wordCount: wordCount
     })).setMimeType(ContentService.MimeType.JSON);
 
   } catch (error) {
-    console.log("EXCEPTION in handleGetEssay:", error.toString());
+    sheetLog("handleGetEssay", "EXCEPTION", error.toString());
     return ContentService.createTextOutput(JSON.stringify({
       success: false,
       error: error.toString()
@@ -492,7 +559,6 @@ function getEssayByCode(code) {
 
   // Normalize the search code (trim whitespace, convert to string)
   const searchCode = code.toString().trim();
-  console.log("getEssayByCode - searching for:", searchCode, "length:", searchCode.length);
 
   // Collect all existing codes for debugging
   const existingCodes = [];
@@ -503,7 +569,11 @@ function getEssayByCode(code) {
     existingCodes.push(rowCode);
 
     if (rowCode === searchCode) {
-      console.log("MATCH FOUND at row", i + 1, "- code:", rowCode);
+      sheetLog("getEssayByCode", "MATCH FOUND", {
+        row: i + 1,
+        code: rowCode,
+        student: data[i][COL.STUDENT_NAME - 1]
+      });
       return {
         row: i + 1, // 1-based row number
         studentName: data[i][COL.STUDENT_NAME - 1],
@@ -513,16 +583,19 @@ function getEssayByCode(code) {
     }
   }
 
-  // No match found - log all existing codes for debugging
-  console.log("NO MATCH - searched for:", searchCode);
-  console.log("Existing codes in database:", existingCodes.join(", "));
+  // No match found - log all existing codes to spreadsheet for debugging
+  const nearMatches = existingCodes.filter(ec =>
+    ec.includes(searchCode) || searchCode.includes(ec)
+  );
 
-  // Check for near-matches (to help debug)
-  for (const existingCode of existingCodes) {
-    if (existingCode.includes(searchCode) || searchCode.includes(existingCode)) {
-      console.log("Potential near-match found:", existingCode);
-    }
-  }
+  sheetLog("getEssayByCode", "NO MATCH FOUND", {
+    searchedFor: searchCode,
+    searchLength: searchCode.length,
+    searchCharCodes: searchCode.split('').map(c => c.charCodeAt(0)).join(','),
+    totalCodesInDB: existingCodes.length,
+    existingCodes: existingCodes.join(", "),
+    nearMatches: nearMatches.length > 0 ? nearMatches.join(", ") : "none"
+  });
 
   return null;
 }
